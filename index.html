@@ -13517,51 +13517,79 @@ async function saveNewQuizPassword(docId) {
     }
 }
 
-        // ==================== 編輯帳號 ====================
-async function showEditAccountModal(docId, name, currentJoinDate) {
+// ==================== 顯示編輯帳戶視窗（加入 Appointment Date） ====================
+async function showEditAccountModal(docId, name, joinDate) {
     try {
-        const accountDoc = await db.collection('accounts').doc(docId).get();
-        const account = accountDoc.data();
-        
+        const staffDoc = await db.collection('accounts').doc(docId).get();
+        const staff = staffDoc.data();
+        const currentAppDate = staff.appointmentDate || joinDate || '';
+
         const modalBody = `
             <div class="input-group">
                 <label>👤 姓名</label>
-                <input type="text" value="${name}" disabled style="background: #f0f0f0;">
+                <input type="text" id="editAccountName" value="${staff.name || name}">
             </div>
-            
             <div class="input-group">
-    <label>📅 入職日期 (Join Date)</label>
-    <input type="date" id="editJoinDate" value="${currentJoinDate}">
-</div>
-<div class="input-group">
-    <label>📅 Appointment Date（用於計算截止日期）</label>
-    <input type="date" id="editAppointmentDate" value="${account.appointmentDate || currentJoinDate}">
-    <small style="color: #666; display: block; margin-top: 5px;">
-        💡 用於計算培訓截止日期。升級後會自動更新
-    </small>
-</div>
-            
-            <div class="input-group">
-                <label>🔑 新密碼（留空表示不修改）</label>
-                <input type="password" id="editPassword" placeholder="輸入新密碼">
+                <label>📊 用戶職級</label>
+                <select id="editAccountLevel">
+                    <option value="WM" ${staff.level === 'WM' ? 'selected' : ''}>WM (病房經理)</option>
+                    <option value="APN" ${staff.level === 'APN' ? 'selected' : ''}>APN (資深護師)</option>
+                    <option value="RN" ${staff.level === 'RN' ? 'selected' : ''}>RN (註冊護士)</option>
+                    <option value="PCA1" ${staff.level === 'PCA1' ? 'selected' : ''}>PCA1</option>
+                    <option value="PCA2" ${staff.level === 'PCA2' ? 'selected' : ''}>PCA2</option>
+                    <option value="PCA3" ${staff.level === 'PCA3' ? 'selected' : ''}>PCA3</option>
+                    <option value="OTA" ${staff.level === 'OTA' ? 'selected' : ''}>OTA</option>
+                </select>
             </div>
-            
             <div class="input-group">
-                <label>🔐 確認新密碼</label>
-                <input type="password" id="editPasswordConfirm" placeholder="再次輸入新密碼">
+                <label>📅 入職日期 (Join Date)</label>
+                <input type="date" id="editAccountJoinDate" value="${staff.joinDate || joinDate || ''}">
             </div>
-            
+            <div class="input-group">
+                <label>📅 Appointment Date（用於計算評核截止日期）</label>
+                <input type="date" id="editAccountAppointmentDate" value="${currentAppDate}">
+                <small style="color: #666; display: block; margin-top: 5px;">
+                    💡 若同事剛升職，請將此日期改為【升級當天日期】，3/6/12個月評核就會從該天開始重新倒數！
+                </small>
+            </div>
             <div class="modal-buttons">
-                <button class="btn btn-success" onclick="saveEditedAccount('${docId}')">✅ 儲存</button>
+                <button class="btn btn-success" onclick="saveEditAccount('${docId}')">✅ 儲存</button>
                 <button class="btn btn-secondary" onclick="closeModal()">❌ 取消</button>
             </div>
         `;
-        
-        showModal(`✏️ 編輯帳號 - ${name}`, modalBody);
-        
+        showModal('✏️ 編輯帳戶資料', modalBody);
+    } catch (e) {
+        console.error('開啟編輯視窗失敗:', e);
+        showToast('❌ 開啟失敗', 'error');
+    }
+}
+
+// 儲存編輯資料
+async function saveEditAccount(docId) {
+    const name = document.getElementById('editAccountName').value.trim();
+    const level = document.getElementById('editAccountLevel').value;
+    const joinDate = document.getElementById('editAccountJoinDate').value;
+    const appointmentDate = document.getElementById('editAccountAppointmentDate').value || joinDate;
+
+    if (!name || !level || !joinDate) {
+        showToast('❌ 請填寫所有必填欄位', 'error');
+        return;
+    }
+
+    try {
+        await db.collection('accounts').doc(docId).update({
+            name: name,
+            level: level,
+            joinDate: joinDate,
+            appointmentDate: appointmentDate
+        });
+
+        showToast('✅ 帳戶資料已更新！', 'success');
+        closeModal();
+        loadAccounts();
     } catch (error) {
-        console.error('載入帳號失敗:', error);
-        showToast('❌ 載入失敗', 'error');
+        console.error('更新帳戶失敗:', error);
+        showToast('❌ 更新失敗: ' + error.message, 'error');
     }
 }
 
@@ -13988,113 +14016,76 @@ async function viewQuizResultBySupervisor(recordId) {
     await viewQuizResult(recordId, 'supervisor');
 }
 
-        // ==================== PCA 升級功能 ====================
-
+// ==================== PCA 專屬升級彈窗 ====================
 async function showPCAUpgradeModal() {
     try {
         const staffDoc = await db.collection('accounts').doc(currentStaffId).get();
         const staff = staffDoc.data();
+        const currentLevel = staff.level; // 例如 PCA3
         
         let targetLevel = '';
-        if (staff.level === 'PCA3') {
-            targetLevel = 'PCA2';
-        } else if (staff.level === 'PCA2') {
-            targetLevel = 'PCA1';
-        } else {
-            showToast('❌ 此員工無法升級', 'error');
+        if (currentLevel === 'PCA3') targetLevel = 'PCA2';
+        else if (currentLevel === 'PCA2') targetLevel = 'PCA1';
+        else {
+            showToast('⚠️ 該職級已無法向上升級', 'warning');
             return;
         }
-        
+
+        const todayStr = new Date().toISOString().split('T')[0];
+
         const modalBody = `
-            <div style="text-align: center; margin-bottom: 20px;">
-                <div style="font-size: 3em; margin-bottom: 15px;">⬆️</div>
-                <h3 style="color: #2ed573;">PCA 職級升級</h3>
+            <div style="background: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 4px solid #2ed573; margin-bottom: 15px;">
+                <strong>晉升同事：</strong> ${staff.name}<br>
+                <strong>目前職級：</strong> ${currentLevel} ➔ <strong style="color: #2ed573; font-size: 1.2em;">${targetLevel}</strong>
             </div>
-            
-            <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #2196f3;">
-                <strong>👤 員工：</strong>${staff.name}<br>
-                <strong>📊 當前職級：</strong><span class="badge badge-${staff.level}">${staff.level}</span><br>
-                <strong>⬆️ 升級至：</strong><span class="badge badge-${targetLevel}">${targetLevel}</span>
-            </div>
-            
- <div style="background: #fff3cd; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #ffa502;">
-    <strong>✅ 升級後的變化：</strong><br>
-    <ul style="margin: 10px 0 0 20px; line-height: 1.8;">
-        <li>職級從 <strong>${staff.level}</strong> 升至 <strong>${targetLevel}</strong></li>
-        <li>⭐ <strong>Appointment Date</strong> 會更新為升級日期</li>
-        <li>⭐ 新職級的截止日期會從升級日期開始計算</li>
-        <li>✅ 所有培訓記錄<strong>完整保留</strong></li>
-        <li>✅ 新職級的培訓項目會自動顯示</li>
-        <li>✅ 舊職級的記錄仍可查看</li>
-    </ul>
-</div>
-            
-<div class="input-group">
-    <label>📅 升級日期</label>
-    <input type="date" id="upgradeDate" value="${new Date().toISOString().split('T')[0]}">
-    <small style="color: #666; display: block; margin-top: 5px;">
-        💡 可選擇過去或未來日期
-    </small>
-</div>
             
             <div class="input-group">
-                <label>💬 升級備註（可選）</label>
-                <textarea id="upgradeRemark" rows="3" placeholder="例如：表現優秀，提前升級"></textarea>
+                <label>📅 晉升/生效日期 (Appointment Date)</label>
+                <input type="date" id="upgradeAppointmentDate" value="${todayStr}">
+                <small style="color: #666; display: block; margin-top: 5px;">
+                    ⚠️ 新職級（${targetLevel}）的 3 個月、6 個月、12 個月評核將以此日期為起點推算！
+                </small>
             </div>
             
             <div class="modal-buttons">
-                <button class="btn btn-success" onclick="confirmPCAUpgrade('${staff.level}', '${targetLevel}')">✅ 確認升級</button>
+                <button class="btn btn-success" onclick="confirmPCAUpgrade('${currentStaffId}', '${currentLevel}', '${targetLevel}')">🚀 確認晉升</button>
                 <button class="btn btn-secondary" onclick="closeModal()">❌ 取消</button>
             </div>
         `;
-        
-        showModal('⬆️ PCA 職級升級', modalBody);
-        
-    } catch (error) {
-        console.error('載入升級介面失敗:', error);
-        showToast('❌ 載入失敗', 'error');
+
+        showModal(`⬆️ PCA 晉升升級 - ${staff.name}`, modalBody);
+    } catch (e) {
+        console.error('開啟升級視窗失敗:', e);
+        showToast('❌ 開啟升級失敗', 'error');
     }
 }
 
-async function confirmPCAUpgrade(fromLevel, toLevel) {
-    const upgradeDate = document.getElementById('upgradeDate').value;
-    const remark = document.getElementById('upgradeRemark').value.trim();
-    
-    if (!upgradeDate) {
-        showToast('❌ 請選擇升級日期', 'error');
+// 確認晉升並更新資料庫
+async function confirmPCAUpgrade(staffId, fromLevel, toLevel) {
+    const newAppointmentDate = document.getElementById('upgradeAppointmentDate').value;
+    if (!newAppointmentDate) {
+        showToast('❌ 請設定生效日期', 'error');
         return;
     }
-    
-    if (!confirm(`❓ 確定要將此員工從 ${fromLevel} 升級至 ${toLevel} 嗎？\n\n✅ 所有培訓記錄會完整保留\n✅ 新職級的培訓項目會自動顯示`)) {
-        return;
-    }
-    
+
     try {
-        const staffDoc = await db.collection('accounts').doc(currentStaffId).get();
-        const staff = staffDoc.data();
-        
-        // ⭐⭐⭐ 更新員工職級 ⭐⭐⭐
-// ⭐⭐⭐ 升級時自動更新 appointmentDate ⭐⭐⭐
-await db.collection('accounts').doc(currentStaffId).update({
-    level: toLevel,
-    appointmentDate: upgradeDate,  // ⭐ 自動更新為升級日期
-    upgradeHistory: firebase.firestore.FieldValue.arrayUnion({
-        fromLevel: fromLevel,
-        toLevel: toLevel,
-        upgradeDate: upgradeDate,
-        remark: remark,
-        upgradedBy: currentUser.docId,
-        upgradedByName: currentUser.name,
-        upgradedAt: new Date().toISOString()
-    })
-});
-        
-        showToast(`✅ 已成功將 ${staff.name} 從 ${fromLevel} 升級至 ${toLevel}！`, 'success');
+        await db.collection('accounts').doc(staffId).update({
+            level: toLevel,
+            appointmentDate: newAppointmentDate,
+            upgradeHistory: firebase.firestore.FieldValue.arrayUnion({
+                fromLevel: fromLevel,
+                toLevel: toLevel,
+                effectiveDate: newAppointmentDate,
+                upgradedBy: currentUser.name,
+                upgradedAt: new Date().toISOString()
+            })
+        });
+
+        showToast(`🎉 恭喜！同事已成功晉升為 ${toLevel}，評核時間表已由 ${newAppointmentDate} 重新起計！`, 'success');
         closeModal();
         
-        // ⭐⭐⭐ 重新載入培訓進度（會自動顯示新職級的項目）⭐⭐⭐
-        await showTrainingProgress(currentStaffId);
-        
+        // 重新整理進度畫面
+        showTrainingProgress(staffId);
     } catch (error) {
         console.error('升級失敗:', error);
         showToast('❌ 升級失敗: ' + error.message, 'error');
@@ -14259,7 +14250,8 @@ async function loadTimelineNotification() {
                 }
                 
                 // 計算截止日期
-                const deadline = calculateDeadline(staff.joinDate, item.deadlineValue, item.deadlineUnit);
+                const referenceDate = staff.appointmentDate || staff.joinDate;
+const deadline = calculateDeadline(referenceDate, item.deadlineValue, item.deadlineUnit);
                 const diffTime = deadline - now;
                 const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
                 
